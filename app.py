@@ -227,26 +227,27 @@ def diff(old, new):
         out.append((1, "ev_overall", {"old": Pct(lo), "new": Pct(ln), "aold": Pct(ao), "anew": Pct(an)}))
     for eid, e in ne.items():
         o, name = oe.get(eid), Name(e["name"])
+        P = {"id": eid, "name": name}
         if o is None:
-            out.append((2, "ev_new", {"name": name, "score": Pct(e["score"]), "ms": Ms(e["milestone"])}))
+            out.append((2, "ev_new", {**P, "score": Pct(e["score"]), "ms": Ms(e["milestone"])}))
             continue
         if e["nuked"] and not o["nuked"]:
-            out.append((1, "ev_nuked", {"name": name, "extra": e["nuked_note"]}))
+            out.append((1, "ev_nuked", {**P, "extra": e["nuked_note"]}))
         d = round(e["score"] - o["score"], 1)
         if abs(d) >= MIN_DELTA:
-            out.append((2, "ev_score", {"icon": "📈" if d > 0 else "📉", "name": name,
+            out.append((2, "ev_score", {**P, "icon": "📈" if d > 0 else "📉",
                                         "old": Pct(o["score"]), "new": Pct(e["score"]), "delta": Delta(d)}))
         if e["milestone"] != o["milestone"]:
-            out.append((2, "ev_milestone", {"name": name, "ms_new": Ms(e["milestone"]), "ms_old": Ms(o["milestone"])}))
+            out.append((2, "ev_milestone", {**P, "ms_new": Ms(e["milestone"]), "ms_old": Ms(o["milestone"])}))
         for field, key, prio in (("fps", "ev_fps", 3), ("stability", "ev_stability", 3),
                                  ("tier", "ev_tier", 3), ("verification", "ev_verification", 3)):
             if e[field] != o[field]:
-                out.append((prio, key, {"name": name, "old": o[field], "new": e[field]}))
+                out.append((prio, key, {**P, "old": o[field], "new": e[field]}))
         if e["text_hash"] != o["text_hash"]:
-            out.append((4, "ev_notes", {"name": name, "extra": e["summary"]}))
+            out.append((4, "ev_notes", {**P, "extra": e["summary"]}))
     for eid, o in oe.items():
         if eid not in ne:
-            out.append((1, "ev_removed", {"name": Name(o["name"])}))
+            out.append((1, "ev_removed", {"id": eid, "name": Name(o["name"])}))
     for nid, n in new["news"].items():
         if nid not in old["news"]:
             out.append((2, "ev_news", {"cat": _name(n["category"]), "title": _name(n["title"])}))
@@ -329,10 +330,12 @@ def fmt(v, lang, discord=True):
     return str(v)
 
 
-def render_event(ev, lang, discord=True):
+def render_event(ev, lang, discord=True, port_line=False):
+    """Full line ('📈 **Doomsday:** 78.7% → 80.0%'), or with port_line=True the short form used
+    inside a port's own block ('📈 78.7% → 80.0%')."""
     _, key, params = ev
-    kw = {k: fmt(v, lang, discord) for k, v in params.items() if k not in ("extra", "date")}
-    text = T(lang, key, **kw)
+    kw = {k: fmt(v, lang, discord) for k, v in params.items() if k not in ("extra", "date", "id")}
+    text = T(lang, "pe_" + key[3:] if port_line else key, **kw)
     if key == "ev_exe" and params.get("date"):
         text += T(lang, "ev_exe_expected", date=params["date"])
     extra = params.get("extra")
@@ -369,29 +372,70 @@ def top3_field(snap, lang):
     return {"name": T(lang, "top3"), "value": "\n".join(lines), "inline": False}
 
 
-def build_update_payloads(events, snap, lang):
-    """One embed per message; long updates are split into ≤3800-char chunks."""
-    lines = [render_event(ev, lang) for ev in events]
-    chunks, cur = [], ""
-    for ln in lines:
-        if cur and len(cur) + len(ln) + 1 > 3800:
-            chunks.append(cur)
-            cur = ""
-        cur += ln + "\n"
+PORT_EVENTS = {"ev_new", "ev_nuked", "ev_removed", "ev_score", "ev_milestone", "ev_fps",
+               "ev_stability", "ev_tier", "ev_verification", "ev_notes"}
+SPACER = "\u200b"  # zero-width field name: a field with no visible heading
+
+
+def update_sections(events, snap, lang):
+    """One embed field per port that changed (heading = name · current score), then news."""
+    rank = {e["id"]: i for i, e in enumerate(ranking(snap))} if snap else {}
+    ports, news = {}, []
+    for ev in events:
+        prio, key, params = ev
+        if key in PORT_EVENTS:
+            pt = ports.setdefault(params["id"], {"prio": prio, "name": str(params["name"]), "lines": []})
+            pt["prio"] = min(pt["prio"], prio)
+            pt["lines"].append(render_event(ev, lang, port_line=True))
+        elif key == "ev_news":
+            news.append(f"**[{fmt(params['cat'], lang)}]** {fmt(params['title'], lang)}")
+    fields = []
+    for pid, pt in sorted(ports.items(), key=lambda kv: (kv[1]["prio"], rank.get(kv[0], 999))):
+        e = (snap or {}).get("efforts", {}).get(pid)
+        head = pt["name"][:200] + (f" · {fmt(Pct(e['score']), lang)}" if e and not e["nuked"] else "")
+        fields.append({"name": head, "value": "\n".join(pt["lines"])[:1024], "inline": False})
+    cur, title = "", T(lang, "news")
+    for ln in news:
+        if cur and len(cur) + len(ln) + 1 > 1024:
+            fields.append({"name": title, "value": cur.strip(), "inline": False})
+            cur, title = "", SPACER
+        cur += ln[:1000] + "\n"
     if cur:
-        chunks.append(cur)
+        fields.append({"name": title, "value": cur.strip(), "inline": False})
+    return fields
+
+
+def build_update_payloads(events, snap, lang):
+    """Headline (executable / overall progress) in the description, one block per port as fields,
+    then top 3 and links. Splits into several messages if Discord's size limits would be hit."""
     urgent = bool(events) and events[0][1] == "ev_exe"
-    links = T(lang, "links", src=SOURCE_URL, site=SITE_URL)
+    desc = "\n".join(render_event(ev, lang) for ev in events if ev[1] in ("ev_exe", "ev_overall"))
+    body = update_sections(events, snap, lang)
+    tail = [f for f in (top3_field(snap, lang),) if f]
+    tail.append({"name": SPACER, "value": T(lang, "links", src=SOURCE_URL, site=SITE_URL), "inline": False})
+
+    def size(fs):
+        return sum(len(f["name"]) + len(f["value"]) for f in fs)
+
+    budget, pages, cur = 5600 - len(desc), [], []   # Discord: 6000 chars and 25 fields per embed
+    for f in body:
+        if cur and (size(cur) + size([f]) > budget or len(cur) >= 20):
+            pages.append(cur)
+            cur, budget = [], 5600
+        cur.append(f)
+    if cur and (size(cur) + size(tail) > budget or len(cur) + len(tail) > 25):
+        pages.append(cur)
+        cur = []
+    pages.append(cur + tail)
+
     payloads = []
-    for i, ch in enumerate(chunks):
-        last = i == len(chunks) - 1
+    for i, fields in enumerate(pages):
         emb = {"title": T(lang, "title_exe" if urgent else "title_update")
-               + (f" ({i + 1}/{len(chunks)})" if len(chunks) > 1 else ""),
-               "description": ch.strip() + ("\n\n" + links if last else ""),
-               "color": URGENT_COLOR if urgent else EMBED_COLOR,
+               + (f" ({i + 1}/{len(pages)})" if len(pages) > 1 else ""),
+               "color": URGENT_COLOR if urgent else EMBED_COLOR, "fields": fields,
                "footer": footer(lang), "timestamp": now_iso()}
-        if last and (f := top3_field(snap, lang)):
-            emb["fields"] = [f]
+        if i == 0 and desc:
+            emb["description"] = desc
         payloads.append(base_payload([emb]))
     return payloads
 

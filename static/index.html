@@ -277,21 +277,25 @@
   <div class="wrap split">
     <div>
       <div class="sh" style="display:block"><span class="label">Preview</span><h2>What lands in your channel</h2></div>
-      <p style="color:var(--muted);max-width:440px">One clean embed per update, in the language you pick: what changed, who moved and the current top 3. No @everyone, no spam: if nothing changes, nothing is sent.</p>
+      <p style="color:var(--muted);max-width:440px">One clean embed per update, in the language you pick: the big picture first, then a block for every port that moved, news and the current top 3. No @everyone, no spam: if nothing changes, nothing is sent.</p>
     </div>
     <div class="dc" aria-label="Example Discord message">
       <div class="row"><div class="av"></div><div style="min-width:0;flex:1">
         <div class="who">PortPing VI<small>APP</small><time>Today at 14:41</time></div>
         <div class="emb">
           <div class="t">📡 GTA VI on PC · port update</div>
-          <div class="d" id="pv-desc">🏆 <b>Overall progress:</b> 77.4% → <b>83.0%</b>
-📈 <b>Belobug:</b> 77.4% → <b>83.0%</b> (+5.6)
-🏁 <b>NewPort</b> reached <b>Main menu</b>
-📰 <b>[Takedown]</b> Repo receives DMCA notice</div>
-          <div class="lk">Open tracker ↗ · Manage alerts</div>
+          <div class="d">🏆 <b>Overall progress:</b> 78.7% → <b>80.0%</b> · top-3 avg 78.1% → 78.6%</div>
+          <div class="fn">Doomsday · 80.0%</div>
+          <div class="fv">📈 78.7% → <b>80.0%</b> (+1.3)
+🎞️ FPS 24 → 30</div>
+          <div class="fn">NightCity Loader · 12.0%</div>
+          <div class="fv">🆕 Joined the tracker at <b>Exe runs</b></div>
+          <div class="fn">📰 News</div>
+          <div class="fv"><b>[Dev]</b> Doomsday dev stream confirms 30 FPS target</div>
           <div class="fn">🏆 Top 3 right now</div>
           <div class="fv" id="pv-board">🥇 <b>Belobug</b> · <code>83.0%</code> · Playable
 🥈 <b>suri</b> · <code>61.0%</code> · In the world (partial)</div>
+          <div class="lk">Open tracker ↗ · Manage alerts</div>
           <div class="ft"><i></i>PortPing VI · unofficial · data from portwatch-vi.xyz · Today at 14:41</div>
         </div>
       </div></div>
@@ -396,8 +400,6 @@ async function load(){
   }
   if(st.events && st.events.length){
     $("#feed").innerHTML = st.events.map(e=>`<li class="${e.major?"":"minor"}"><time datetime="${esc(e.ts)}">${esc(short(e.ts))}</time><span>${md(e.text)}</span></li>`).join("");
-    const recent = st.events.filter(e=>e.major).slice(0,4);
-    if(recent.length) $("#pv-desc").innerHTML = recent.map(e=>md(e.text)).join("\n");
   }
   if(st.last_change) $("#lastchange").textContent = `Last change broadcast ${ago(st.last_change)}.`;
 }
