@@ -69,11 +69,16 @@
   .modes input{position:absolute;opacity:0}
   .modes label:has(input:checked){border-color:var(--pink);background:#ff3e8a10}
   .modes label:has(input:focus-visible){box-shadow:0 0 0 3px #ff3e8a40}
+  .lang{margin:0 0 16px}
+  .lang select{width:100%;appearance:none;-webkit-appearance:none;font:14px var(--sans);padding:12px 40px 12px 14px;border:1.5px solid var(--line);border-radius:12px;color:var(--ink);cursor:pointer;outline:none;transition:.15s;
+    background:#0f0c16 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23a59fb5' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 15px center}
+  .lang select:focus{border-color:var(--pink);box-shadow:0 0 0 4px #ff3e8a26}
+  .lang select option{background:#14121a;color:var(--ink)}
   button.go{width:100%;border:0;border-radius:12px;padding:14px;font:800 16px var(--sans);font-stretch:90%;letter-spacing:.01em;color:#fff;background:var(--sunset);cursor:pointer;transition:.15s;box-shadow:0 10px 24px -10px #ff3e8a90}
   button.go:hover{transform:translateY(-1px);filter:saturate(1.15)}
   button.go:disabled{opacity:.6;cursor:wait;transform:none}
   .unsub-mode button.go{background:var(--ink);color:var(--bg);box-shadow:none}
-  .unsub-mode .modes{display:none}
+  .unsub-mode .modes,.unsub-mode .lang{display:none}
   .msg{min-height:22px;margin-top:12px;font-size:14px;font-weight:600}
   .msg.ok{color:var(--ok)}.msg.err{color:var(--err)}
   .toggle{background:none;border:0;padding:0;margin-top:6px;font:inherit;font-size:13px;color:var(--muted);text-decoration:underline;cursor:pointer}
@@ -112,16 +117,20 @@
   .split{display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start}
   .dc{background:#313338;border:1px solid #3f4147;color:#dbdee1;border-radius:var(--r);padding:18px 18px 20px;font:15px/1.4 "gg sans","Noto Sans",system-ui,sans-serif}
   .dc .row{display:flex;gap:14px}
-  .dc .av{width:40px;height:40px;border-radius:50%;flex:none;background:#14121a url('/favicon.svg') center/100%}
+  .dc .av{width:40px;height:40px;border-radius:50%;flex:none;background:#14121a url('/avatar.png') center/cover}
   .dc .who{font-weight:600;color:#f2f3f5}
   .dc .who small{background:#5865f2;color:#fff;font-size:10px;padding:1px 5px;border-radius:4px;margin-left:6px;vertical-align:2px}
   .dc .who time{color:#949ba4;font-size:12px;font-weight:400;margin-left:6px}
   .emb{margin-top:6px;background:#2b2d31;border-left:4px solid var(--pink);border-radius:4px;padding:10px 14px 12px;max-width:470px}
-  .emb .t{font-weight:700;color:#00a8fc;margin-bottom:6px}
+  .emb .t{font-weight:700;color:#f2f3f5;margin-bottom:6px}
   .emb .d{font-size:14px;white-space:pre-line}
   .emb .d b{color:#f2f3f5}
-  .emb pre{background:#1e1f22;border-radius:4px;padding:8px;font:12px/1.45 var(--mono);margin:10px 0 0;color:#dbdee1;overflow:auto}
-  .emb .ft{font-size:11px;color:#949ba4;margin-top:8px}
+  .emb .lk{margin-top:10px;font-size:14px;color:#00a8fc}
+  .emb .fn{font-size:14px;font-weight:700;color:#f2f3f5;margin:12px 0 2px}
+  .emb .fv{font-size:14px;white-space:pre-line}
+  .emb .fv b{color:#f2f3f5}
+  .emb .ft{font-size:12px;color:#949ba4;margin-top:10px;display:flex;align-items:center;gap:6px}
+  .emb .ft i{width:18px;height:18px;border-radius:50%;flex:none;background:url('/avatar.png') center/cover}
   .dc code{font:12px var(--mono);background:#1e1f22;padding:1px 4px;border-radius:3px}
 
   /* board */
@@ -207,6 +216,20 @@
         <label><input type="radio" name="mode" value="all" checked><b>Everything</b><span>Every change, incl. FPS and notes</span></label>
         <label><input type="radio" name="mode" value="major"><b>Big moves only</b><span>Progress, milestones, takedowns, news</span></label>
       </div>
+      <div class="lang">
+        <label class="f" for="lang">Message language</label>
+        <select id="lang" name="lang">
+          <option value="en">English</option>
+          <option value="pt-BR">Português (Brasil)</option>
+          <option value="es">Español</option>
+          <option value="fr">Français</option>
+          <option value="de">Deutsch</option>
+          <option value="it">Italiano</option>
+          <option value="pl">Polski</option>
+          <option value="ru">Русский</option>
+          <option value="tr">Türkçe</option>
+        </select>
+      </div>
       <button class="go" type="submit" id="go">Start pinging my server</button>
       <div class="msg" id="msg" role="status" aria-live="polite"></div>
       <button class="toggle" type="button" id="toggle">Want to stop alerts? Unsubscribe a webhook</button>
@@ -254,20 +277,22 @@
   <div class="wrap split">
     <div>
       <div class="sh" style="display:block"><span class="label">Preview</span><h2>What lands in your channel</h2></div>
-      <p style="color:var(--muted);max-width:440px">One clean embed per update: what changed, who moved and the current top 5. No @everyone, no spam: if nothing changes, nothing is sent.</p>
+      <p style="color:var(--muted);max-width:440px">One clean embed per update, in the language you pick: what changed, who moved and the current top 3. No @everyone, no spam: if nothing changes, nothing is sent.</p>
     </div>
     <div class="dc" aria-label="Example Discord message">
       <div class="row"><div class="av"></div><div style="min-width:0;flex:1">
         <div class="who">PortPing VI<small>APP</small><time>Today at 14:41</time></div>
         <div class="emb">
-          <div class="t">GTA VI PC port update</div>
+          <div class="t">📡 GTA VI on PC · port update</div>
           <div class="d" id="pv-desc">🏆 <b>Overall progress:</b> 77.4% → <b>83.0%</b>
 📈 <b>Belobug:</b> 77.4% → <b>83.0%</b> (+5.6)
 🏁 <b>NewPort</b> reached <b>Main menu</b>
 📰 <b>[Takedown]</b> Repo receives DMCA notice</div>
-          <pre id="pv-board">1. Belobug             83.0%
-2. suri                61.0%</pre>
-          <div class="ft">Unofficial · data from portwatch-vi.xyz</div>
+          <div class="lk">Open tracker ↗ · Manage alerts</div>
+          <div class="fn">🏆 Top 3 right now</div>
+          <div class="fv" id="pv-board">🥇 <b>Belobug</b> · <code>83.0%</code> · Playable
+🥈 <b>suri</b> · <code>61.0%</code> · In the world (partial)</div>
+          <div class="ft"><i></i>PortPing VI · unofficial · data from portwatch-vi.xyz · Today at 14:41</div>
         </div>
       </div></div>
     </div>
@@ -363,7 +388,7 @@ async function load(){
         <td class="hide-sm"><span class="tag ${e.verification==="portwatch"?"v":""}">${esc(e.verification||"–")}</span></td></tr>`;
     }).join("") : `<tr><td colspan="6" class="empty">No efforts ranked yet.</td></tr>`;
     if(b.length){
-      $("#pv-board").textContent = b.slice(0,5).map((e,i)=>`${i+1}. ${e.name.slice(0,18).padEnd(18)} ${e.score.toFixed(1).padStart(5)}%`).join("\n");
+      $("#pv-board").innerHTML = b.slice(0,3).map((e,i)=>`${["🥇","🥈","🥉"][i]} <b>${esc(e.name)}</b> · <code>${e.score.toFixed(1)}%</code> · ${esc(e.milestone)}`).join("\n");
     }
   } else {
     $("#answer").innerHTML = `<i>…</i> waiting for the first check`;
@@ -379,6 +404,14 @@ async function load(){
 
 let unsub = false;
 const form = $("#subscribe"), msg = $("#msg"), go = $("#go");
+(() => {  // default the message language to the visitor's browser language
+  const opts = [...$("#lang").options].map(o => o.value);
+  for (const tag of navigator.languages || [navigator.language || "en"]) {
+    const t = String(tag).toLowerCase(), base = t.split("-")[0];
+    const hit = opts.find(v => v.toLowerCase() === t) || opts.find(v => v.toLowerCase().split("-")[0] === base);
+    if (hit) { $("#lang").value = hit; break; }
+  }
+})();
 $("#toggle").onclick = () => {
   unsub = !unsub;
   form.classList.toggle("unsub-mode", unsub);
@@ -399,7 +432,7 @@ form.onsubmit = async ev => {
   try{
     const r = await fetch(unsub ? "/api/unsubscribe" : "/api/subscribe", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({url, mode: form.mode.value})
+      body: JSON.stringify({url, mode: form.mode.value, lang: $("#lang").value})
     });
     const j = await r.json();
     if(!j.ok) throw new Error(j.error || "Something went wrong.");

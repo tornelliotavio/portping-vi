@@ -14,7 +14,7 @@ Env vars (all optional):
   CHECK_INTERVAL_MIN=10     how often to poll the feed
   MIN_SCORE_DELTA=0.1       minimum % change that counts as a change
   BROADCAST_WORKERS=5       parallel webhook senders
-  AVATAR_URL=               optional png/jpg avatar for the webhook messages
+  AVATAR_URL=               png/jpg avatar for the webhook messages (default: SITE_URL/avatar.png)
 """
 import hashlib
 import json
@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from i18n import LANGS, STRINGS, norm_lang
+
 FEED_URL = "https://portwatch-vi.xyz/data/tracker.json"
 SOURCE_URL = "https://portwatch-vi.xyz"
 HERE = Path(__file__).resolve().parent
@@ -43,9 +45,11 @@ SITE_URL = os.environ.get("SITE_URL", f"http://localhost:{PORT}").rstrip("/")
 INTERVAL = max(1, int(os.environ.get("CHECK_INTERVAL_MIN", "10"))) * 60
 MIN_DELTA = float(os.environ.get("MIN_SCORE_DELTA", "0.1"))
 WORKERS = max(1, int(os.environ.get("BROADCAST_WORKERS", "5")))
-AVATAR_URL = os.environ.get("AVATAR_URL") or None
+AVATAR_URL = os.environ.get("AVATAR_URL") or (f"{SITE_URL}/avatar.png" if SITE_URL.startswith("https://") else None)
 UA = "PortPingVI/1.0 (+%s)" % SITE_URL
 EMBED_COLOR = 0xFF3E8A
+URGENT_COLOR = 0xFF8A3D
+BYE_COLOR = 0x4E5058
 MAX_FAILS = 20
 
 
@@ -75,11 +79,14 @@ def db_init():
         c.executescript("""
         CREATE TABLE IF NOT EXISTS subscribers(
             hook_id TEXT PRIMARY KEY, url TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'all',
-            name TEXT, created_at TEXT, last_ok TEXT, fails INTEGER NOT NULL DEFAULT 0);
+            name TEXT, created_at TEXT, last_ok TEXT, fails INTEGER NOT NULL DEFAULT 0,
+            lang TEXT NOT NULL DEFAULT 'en');
         CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
         CREATE TABLE IF NOT EXISTS events(
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, text TEXT, major INTEGER);
         """)
+        if "lang" not in {r[1] for r in c.execute("PRAGMA table_info(subscribers)")}:
+            c.execute("ALTER TABLE subscribers ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
 
 
 def kv_get(k, default=None):
@@ -186,47 +193,63 @@ def headline(snap):
     return r[0]["score"], round(sum(e["score"] for e in r[:3]) / len(r[:3]), 1)
 
 
+class Pct(float):
+    """A percentage; formatted per language (78.7% / 78,7%)."""
+
+
+class Delta(float):
+    """A signed change; formatted per language (+0.8 / +0,8)."""
+
+
+class Ms(str):
+    """A milestone label from score_effort(); translated per language."""
+
+
+class Name(str):
+    """Free text from the feed (names, titles); markdown-escaped for Discord."""
+
+
+def _name(v):
+    return Name(v) if v else None
+
+
 def diff(old, new):
-    """Returns list of (priority, text). Priority 0-2 = major, 3-4 = details."""
+    """Returns list of (priority, key, params). Priority 0-2 = major, 3-4 = details.
+    Rendered per language by render_event(); 'extra' is untranslated feed text appended after a dash."""
     out, oe, ne = [], old["efforts"], new["efforts"]
     if old["exe"] != new["exe"]:
         x = new["exe"]
-        out.append((0, f"🚨 **Executable status:** `{old['exe'].get('status')}` → `{x.get('status')}`"
-                       + (f" (expected {x['expected']})" if x.get("expected") else "")
-                       + (f" — {x['note']}" if x.get("note") else "")))
+        out.append((0, "ev_exe", {"old": old["exe"].get("status"), "new": x.get("status"),
+                                  "date": x.get("expected"), "extra": x.get("note")}))
     lo, ao = headline(old)
     ln, an = headline(new)
     if abs(ln - lo) >= MIN_DELTA:
-        out.append((1, f"🏆 **Overall progress:** {lo}% → **{ln}%** · top-3 avg {ao}% → {an}%"))
+        out.append((1, "ev_overall", {"old": Pct(lo), "new": Pct(ln), "aold": Pct(ao), "anew": Pct(an)}))
     for eid, e in ne.items():
-        o = oe.get(eid)
+        o, name = oe.get(eid), Name(e["name"])
         if o is None:
-            out.append((2, f"🆕 **New effort:** {e['name']} — {e['score']}% ({e['milestone']})"))
+            out.append((2, "ev_new", {"name": name, "score": Pct(e["score"]), "ms": Ms(e["milestone"])}))
             continue
         if e["nuked"] and not o["nuked"]:
-            out.append((1, f"💥 **{e['name']} got nuked**" + (f": {e['nuked_note']}" if e["nuked_note"] else "")))
+            out.append((1, "ev_nuked", {"name": name, "extra": e["nuked_note"]}))
         d = round(e["score"] - o["score"], 1)
         if abs(d) >= MIN_DELTA:
-            out.append((2, f"{'📈' if d > 0 else '📉'} **{e['name']}:** {o['score']}% → **{e['score']}%** "
-                           f"({'+' if d > 0 else ''}{d})"))
+            out.append((2, "ev_score", {"icon": "📈" if d > 0 else "📉", "name": name,
+                                        "old": Pct(o["score"]), "new": Pct(e["score"]), "delta": Delta(d)}))
         if e["milestone"] != o["milestone"]:
-            out.append((2, f"🏁 **{e['name']}** reached **{e['milestone']}** (was {o['milestone']})"))
-        if e["fps"] != o["fps"]:
-            out.append((3, f"🎞️ {e['name']}: FPS {o['fps']} → {e['fps']}"))
-        if e["stability"] != o["stability"]:
-            out.append((3, f"🧱 {e['name']}: stability {o['stability']} → {e['stability']}"))
-        if e["tier"] != o["tier"]:
-            out.append((3, f"🔀 {e['name']}: moved {o['tier']} → {e['tier']}"))
-        if e["verification"] != o["verification"]:
-            out.append((3, f"✅ {e['name']}: verification {o['verification']} → {e['verification']}"))
+            out.append((2, "ev_milestone", {"name": name, "ms_new": Ms(e["milestone"]), "ms_old": Ms(o["milestone"])}))
+        for field, key, prio in (("fps", "ev_fps", 3), ("stability", "ev_stability", 3),
+                                 ("tier", "ev_tier", 3), ("verification", "ev_verification", 3)):
+            if e[field] != o[field]:
+                out.append((prio, key, {"name": name, "old": o[field], "new": e[field]}))
         if e["text_hash"] != o["text_hash"]:
-            out.append((4, f"✏️ {e['name']}: notes updated — {(e['summary'] or '')[:180]}"))
+            out.append((4, "ev_notes", {"name": name, "extra": e["summary"]}))
     for eid, o in oe.items():
         if eid not in ne:
-            out.append((1, f"❌ **{o['name']}** was removed from the tracker"))
+            out.append((1, "ev_removed", {"name": Name(o["name"])}))
     for nid, n in new["news"].items():
         if nid not in old["news"]:
-            out.append((2, f"📰 **[{n['category']}]** {n['title']}"))
+            out.append((2, "ev_news", {"cat": _name(n["category"]), "title": _name(n["title"])}))
     out.sort(key=lambda t: t[0])
     return out
 
@@ -271,6 +294,55 @@ def post_webhook(url, payload):
     return 429
 
 
+_MD = re.compile(r"([\\*_~`|>\[\]])")
+
+
+def md_escape(text):
+    return _MD.sub(r"\\\1", str(text))
+
+
+def T(lang, key, **kw):
+    s = STRINGS.get(lang, {}).get(key) or STRINGS["en"].get(key, key)
+    return s.format(**kw) if kw else s
+
+
+def tr_ms(ms, lang):
+    """Translate a milestone label like 'Main menu' or 'Main menu (partial)'."""
+    ms = str(ms or "—")
+    partial = ms.endswith(" (partial)")
+    base = ms[:-10] if partial else ms
+    key = "ms_" + base
+    out = STRINGS.get(lang, {}).get(key) or STRINGS["en"].get(key) or base
+    return f"{out} ({T(lang, 'partial')})" if partial else out
+
+
+def fmt(v, lang, discord=True):
+    if v is None or v == "":
+        return "—"
+    if isinstance(v, (Pct, Delta)):
+        s = f"{v:+.1f}" if isinstance(v, Delta) else f"{v:.1f}%"
+        return s.replace(".", ",") if LANGS.get(lang, ("", False))[1] else s
+    if isinstance(v, Ms):
+        return tr_ms(v, lang)
+    if isinstance(v, Name) and discord:
+        return md_escape(v)
+    return str(v)
+
+
+def render_event(ev, lang, discord=True):
+    _, key, params = ev
+    kw = {k: fmt(v, lang, discord) for k, v in params.items() if k not in ("extra", "date")}
+    text = T(lang, key, **kw)
+    if key == "ev_exe" and params.get("date"):
+        text += T(lang, "ev_exe_expected", date=params["date"])
+    extra = params.get("extra")
+    if extra:
+        extra = str(extra).strip()
+        extra = extra[:180] + ("…" if len(extra) > 180 else "")
+        text += " — " + (md_escape(extra) if discord else extra)
+    return text
+
+
 def base_payload(embeds):
     p = {"username": "PortPing VI", "embeds": embeds, "allowed_mentions": {"parse": []}}
     if AVATAR_URL:
@@ -278,41 +350,67 @@ def base_payload(embeds):
     return p
 
 
-def leaderboard_field(snap, n=5):
-    rows = ranking(snap, n)
+def footer(lang):
+    f = {"text": T(lang, "footer")}
+    if AVATAR_URL:
+        f["icon_url"] = AVATAR_URL
+    return f
+
+
+MEDALS = ("🥇", "🥈", "🥉")
+
+
+def top3_field(snap, lang):
+    rows = ranking(snap, 3) if snap else []
     if not rows:
         return None
-    lines = [f"{i}. {e['name'][:18]:<18} {e['score']:>5}%" for i, e in enumerate(rows, 1)]
-    return {"name": "Leaderboard", "value": "```\n" + "\n".join(lines) + "\n```", "inline": False}
+    lines = [f"{MEDALS[i]} **{md_escape(e['name'][:32])}** · `{fmt(Pct(e['score']), lang)}` · {tr_ms(e['milestone'], lang)}"
+             for i, e in enumerate(rows)]
+    return {"name": T(lang, "top3"), "value": "\n".join(lines), "inline": False}
 
 
-def footer():
-    return {"text": f"Unofficial · data from portwatch-vi.xyz · manage alerts at {SITE_URL}"}
-
-
-def build_update_payloads(lines, snap):
-    """Split lines into embeds ≤3800 chars; one embed per message keeps it simple."""
+def build_update_payloads(events, snap, lang):
+    """One embed per message; long updates are split into ≤3800-char chunks."""
+    lines = [render_event(ev, lang) for ev in events]
     chunks, cur = [], ""
     for ln in lines:
-        if len(cur) + len(ln) + 1 > 3800:
+        if cur and len(cur) + len(ln) + 1 > 3800:
             chunks.append(cur)
             cur = ""
         cur += ln + "\n"
     if cur:
         chunks.append(cur)
-    urgent = lines and lines[0].startswith("🚨")
+    urgent = bool(events) and events[0][1] == "ev_exe"
+    links = T(lang, "links", src=SOURCE_URL, site=SITE_URL)
     payloads = []
     for i, ch in enumerate(chunks):
-        emb = {"title": ("🚨 GTA VI on PC — executable update" if urgent else "GTA VI PC port update")
+        last = i == len(chunks) - 1
+        emb = {"title": T(lang, "title_exe" if urgent else "title_update")
                + (f" ({i + 1}/{len(chunks)})" if len(chunks) > 1 else ""),
-               "url": SOURCE_URL, "description": ch.strip(), "color": EMBED_COLOR,
-               "timestamp": now_iso(), "footer": footer()}
-        if i == len(chunks) - 1:
-            f = leaderboard_field(snap)
-            if f:
-                emb["fields"] = [f]
+               "description": ch.strip() + ("\n\n" + links if last else ""),
+               "color": URGENT_COLOR if urgent else EMBED_COLOR,
+               "footer": footer(lang), "timestamp": now_iso()}
+        if last and (f := top3_field(snap, lang)):
+            emb["fields"] = [f]
         payloads.append(base_payload([emb]))
     return payloads
+
+
+def hello_payload(lang, mode, existed, snap):
+    emb = {"title": T(lang, "again_title" if existed else "hello_title"),
+           "description": T(lang, "again_desc" if existed else "hello_desc") + "\n\n" + T(lang, "manage", site=SITE_URL),
+           "color": EMBED_COLOR, "footer": footer(lang), "timestamp": now_iso(),
+           "fields": [{"name": T(lang, "alerts"), "value": T(lang, "mode_major" if mode == "major" else "mode_all"),
+                       "inline": True},
+                      {"name": T(lang, "language"), "value": LANGS[lang][0], "inline": True}]}
+    if f := top3_field(snap, lang):
+        emb["fields"].append(f)
+    return base_payload([emb])
+
+
+def bye_payload(lang):
+    return base_payload([{"title": T(lang, "bye_title"), "description": T(lang, "bye_desc", site=SITE_URL),
+                          "color": BYE_COLOR, "footer": footer(lang), "timestamp": now_iso()}])
 
 
 def mark(hook_id, status):
@@ -327,18 +425,21 @@ def mark(hook_id, status):
             c.execute("DELETE FROM subscribers WHERE hook_id=? AND fails>=?", (hook_id, MAX_FAILS))
 
 
-def broadcast(changes, snap):
-    major_lines = [t for p, t in changes if p <= 2]
-    all_lines = [t for _, t in changes]
+def broadcast(events, snap):
     with db() as c:
-        subs = [dict(r) for r in c.execute("SELECT hook_id, url, mode FROM subscribers")]
-    pay_all = build_update_payloads(all_lines, snap) if all_lines else []
-    pay_major = build_update_payloads(major_lines, snap) if major_lines else []
+        subs = [dict(r) for r in c.execute("SELECT hook_id, url, mode, lang FROM subscribers")]
+    major = [ev for ev in events if ev[0] <= 2]
+    payloads = {}
+    for sub in subs:
+        key = (sub["lang"], sub["mode"])
+        if key not in payloads:
+            evs = major if sub["mode"] == "major" else events
+            payloads[key] = build_update_payloads(evs, snap, sub["lang"]) if evs else []
 
     def send(sub):
-        payloads = pay_major if sub["mode"] == "major" else pay_all
+        todo = payloads[(sub["lang"], sub["mode"])]
         status = 204
-        for p in payloads:
+        for p in todo:
             try:
                 status = post_webhook(sub["url"], p)
             except Exception as e:  # noqa: BLE001
@@ -346,12 +447,12 @@ def broadcast(changes, snap):
                 status = 0
             if status not in (200, 204):
                 break
-        if payloads:
+        if todo:
             mark(sub["hook_id"], status)
 
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         list(ex.map(send, subs))
-    log(f"Broadcast {len(all_lines)} change(s) to {len(subs)} webhook(s)")
+    log(f"Broadcast {len(events)} change(s) to {len(subs)} webhook(s)")
 
 
 # ═════════════════════════ poller ═════════════════════════
@@ -381,7 +482,7 @@ def check_once():
             with _db_lock, db() as c:
                 ts = now_iso()
                 c.executemany("INSERT INTO events(ts,text,major) VALUES(?,?,?)",
-                              [(ts, t, 1 if p <= 2 else 0) for p, t in changes])
+                              [(ts, render_event(ev, "en", discord=False), 1 if ev[0] <= 2 else 0) for ev in changes])
                 c.execute("DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 200)")
             kv_set("last_change", now_iso())
             kv_set("snapshot", new)
@@ -426,32 +527,22 @@ def api_subscribe(body):
         return 400, {"ok": False, "error": "That doesn't look like a Discord webhook URL."}
     hook_id, url = parsed
     mode = "major" if body.get("mode") == "major" else "all"
+    lang = norm_lang(body.get("lang"))
     status, info, _ = http_json("GET", url)
     if status != 200 or not isinstance(info, dict):
         return 400, {"ok": False, "error": "Discord says this webhook doesn't exist (or was deleted)."}
     name = info.get("name") or "webhook"
     with db() as c:
         existed = c.execute("SELECT 1 FROM subscribers WHERE hook_id=?", (hook_id,)).fetchone() is not None
-    snap = kv_get("snapshot")
-    lead = headline(snap)[0] if snap else None
-    desc = ("Settings updated." if existed else "You're subscribed. This channel will get a message whenever "
-            "a GTA VI PC port moves: progress jumps, new milestones, takedowns, news.")
-    desc += f"\n\n**Mode:** {'Big moves only' if mode == 'major' else 'Everything'}"
-    if lead is not None:
-        desc += f"\n**Current leader:** {lead}%"
-    emb = {"title": "✅ PortPing VI is connected", "url": SITE_URL, "description": desc,
-           "color": EMBED_COLOR, "footer": footer()}
-    if snap and (f := leaderboard_field(snap)):
-        emb["fields"] = [f]
-    st = post_webhook(url, base_payload([emb]))
+    st = post_webhook(url, hello_payload(lang, mode, existed, kv_get("snapshot")))
     if st not in (200, 204):
         return 400, {"ok": False, "error": f"Couldn't post to that webhook (HTTP {st})."}
     with _db_lock, db() as c:
-        c.execute("""INSERT INTO subscribers(hook_id,url,mode,name,created_at,last_ok,fails)
-                     VALUES(?,?,?,?,?,?,0) ON CONFLICT(hook_id) DO UPDATE
-                     SET url=excluded.url, mode=excluded.mode, name=excluded.name, fails=0""",
-                  (hook_id, url, mode, name, now_iso(), now_iso()))
-    return 200, {"ok": True, "updated": existed, "name": name, "mode": mode}
+        c.execute("""INSERT INTO subscribers(hook_id,url,mode,name,created_at,last_ok,fails,lang)
+                     VALUES(?,?,?,?,?,?,0,?) ON CONFLICT(hook_id) DO UPDATE
+                     SET url=excluded.url, mode=excluded.mode, name=excluded.name, fails=0, lang=excluded.lang""",
+                  (hook_id, url, mode, name, now_iso(), now_iso(), lang))
+    return 200, {"ok": True, "updated": existed, "name": name, "mode": mode, "lang": lang}
 
 
 def api_unsubscribe(body):
@@ -460,12 +551,11 @@ def api_unsubscribe(body):
         return 400, {"ok": False, "error": "That doesn't look like a Discord webhook URL."}
     hook_id, url = parsed
     with _db_lock, db() as c:
+        row = c.execute("SELECT lang FROM subscribers WHERE hook_id=?", (hook_id,)).fetchone()
         removed = c.execute("DELETE FROM subscribers WHERE hook_id=?", (hook_id,)).rowcount > 0
     if removed:
         try:
-            post_webhook(url, base_payload([{"title": "👋 Unsubscribed from PortPing VI",
-                                             "description": "No more alerts will be sent here.",
-                                             "color": 0x888888, "footer": footer()}]))
+            post_webhook(url, bye_payload(row["lang"] if row else "en"))
         except Exception:  # noqa: BLE001
             pass
     return 200, {"ok": True, "removed": removed}
@@ -519,6 +609,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8", "no-cache")
         if path == "/favicon.svg":
             return self._send(200, (STATIC / "favicon.svg").read_bytes(), "image/svg+xml", "max-age=86400")
+        if path == "/avatar.png":
+            return self._send(200, (STATIC / "avatar.png").read_bytes(), "image/png", "max-age=86400")
         if path == "/api/status":
             return self._send(*api_status())
         if path == "/healthz":

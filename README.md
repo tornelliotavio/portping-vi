@@ -5,6 +5,7 @@ webhook on the site; the server polls the PortWatch VI feed and posts an embed t
 webhook when something changes.
 
 Zero dependencies — Python 3.10+ standard library only (HTTP server, SQLite, poller in one process).
+Discord messages are sent in each subscriber's chosen language (strings live in `i18n.py`); the site itself is English.
 
 ## Run locally
 
@@ -28,11 +29,12 @@ python app.py            # http://localhost:8080
 | `CHECK_INTERVAL_MIN` | 10 | feed poll interval |
 | `MIN_SCORE_DELTA` | 0.1 | min % change to report |
 | `BROADCAST_WORKERS` | 5 | parallel webhook senders |
-| `AVATAR_URL` | – | png/jpg avatar for messages |
+| `AVATAR_URL` | `SITE_URL/avatar.png` | png/jpg avatar for messages |
 
 ## API
 
-- `POST /api/subscribe` `{url, mode: "all" | "major"}` — validates the webhook with Discord, posts a confirmation, stores it
+- `POST /api/subscribe` `{url, mode: "all" | "major", lang}` — validates the webhook with Discord, posts a confirmation, stores it.
+  `lang` is one of `en pt-BR es fr de it pl ru tr` (anything else falls back to English); the site defaults it to the browser language.
 - `POST /api/unsubscribe` `{url}`
 - `GET /api/status` — leaderboard, stats, recent broadcasts
 - `GET /healthz`
